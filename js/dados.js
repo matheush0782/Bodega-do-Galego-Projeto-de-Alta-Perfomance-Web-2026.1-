@@ -1,137 +1,55 @@
 /**
- * dados.js — Camada de Dados Compartilhada
- *
- * Migrado de localStorage para Firebase Cloud Firestore.
- * Mantém sincronização em tempo real (onSnapshot) para atualizar a vitrine
- * e o admin instantaneamente para todos os usuários conectados.
+ * dados.js — Camada de Dados com Supabase
+ * Todos os dados são salvos e lidos do Supabase,
+ * ficando disponíveis para todos os usuários.
  */
 
-// Configuração do Firebase
-// Caso queira usar credenciais reais, substitua este objeto com as credenciais do seu Console Firebase.
-const firebaseConfig = {
-    apiKey: "AIzaSyDummyKey_PleaseReplaceWithRealKey",
-    authDomain: "bodega-do-galego.firebaseapp.com",
-    projectId: "bodega-do-galego",
-    storageBucket: "bodega-do-galego.appspot.com",
-    messagingSenderId: "1234567890",
-    appId: "1:1234567890:web:abcdef"
+const SUPABASE_URL = 'https://oinyeirkekaqwxiiqdqw.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9pbnllaXJrZWthcXd4aWlxZHF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA3ODI2NzAsImV4cCI6MjA5NjM1ODY3MH0.ufQpR1UliXY736BQPXPMHQUXDwHT2VKiC0CXEQqqPZA';
+const API = SUPABASE_URL + '/rest/v1/produtos';
+
+const HEADERS = {
+    'apikey': SUPABASE_KEY,
+    'Authorization': 'Bearer ' + SUPABASE_KEY,
+    'Content-Type': 'application/json'
 };
 
-let db;
-let produtosCache = [];
-let onProdutosAtualizadosCallback = null;
-let initialized = false;
-let resolveInitPromise;
-
-// Promise global que resolve quando os dados iniciais do Firestore são carregados
-const initPromise = new Promise((resolve) => {
-    resolveInitPromise = resolve;
-});
+// Cache local para uso síncrono (getProdutos)
+var _cache = [];
 
 /**
- * Registra um callback para ser notificado sempre que houver alterações nos produtos.
- * @param {Function} callback 
- */
-function registrarListenerProdutos(callback) {
-    onProdutosAtualizadosCallback = callback;
-    // Se o cache já foi inicializado com dados, executa o callback imediatamente
-    if (initialized) {
-        callback(produtosCache);
-    }
-}
-
-// Inicializa o SDK do Firebase Compat e o Cloud Firestore
-if (typeof firebase !== 'undefined') {
-    if (!firebase.apps.length) {
-        firebase.initializeApp(firebaseConfig);
-    }
-    db = firebase.firestore();
-
-    // Escuta a coleção "produtos" em tempo real
-    db.collection("produtos").onSnapshot(async (snapshot) => {
-        if (snapshot.empty && !initialized) {
-            // Banco de dados novo/vazio: semeia com os dados de produtos.json
-            initialized = true;
-            console.log("Banco de dados vazio no Firestore. Semeando dados iniciais...");
-            await semearBancoDeDados();
-            return;
-        }
-
-        produtosCache = [];
-        snapshot.forEach((doc) => {
-            produtosCache.push(doc.data());
-        });
-
-        // Garante a ordenação crescente por ID numérico
-        produtosCache.sort((a, b) => a.id - b.id);
-
-        initialized = true;
-        resolveInitPromise(produtosCache);
-
-        if (onProdutosAtualizadosCallback) {
-            onProdutosAtualizadosCallback(produtosCache);
-        }
-    }, (error) => {
-        console.error("Erro no listener em tempo real do Firestore:", error);
-    });
-} else {
-    console.error("Firebase SDK não carregado! Verifique as referências do CDN no HTML.");
-}
-
-/**
- * Popula a coleção "produtos" no Firestore usando o arquivo produtos.json
- */
-async function semearBancoDeDados() {
-    try {
-        const resp = await fetch('produtos.json');
-        if (!resp.ok) throw new Error('Falha ao buscar produtos.json');
-        const data = await resp.json();
-        
-        const batch = db.batch();
-        data.forEach((p) => {
-            const docRef = db.collection("produtos").doc(p.id.toString());
-            batch.set(docRef, {
-                id: p.id,
-                nome: p.nome,
-                preco: parseFloat(p.preco),
-                estoque: parseInt(p.estoque),
-                categoria: p.categoria,
-                imagem: p.imagem || '',
-                status: p.status || (parseInt(p.estoque) > 0 ? 'Disponível' : 'Esgotado')
-            });
-        });
-        await batch.commit();
-        console.log("Banco de dados do Firestore inicializado com sucesso!");
-    } catch (erro) {
-        console.error('Erro ao semear o banco de dados no Firestore:', erro);
-    }
-}
-
-/**
- * Retorna uma Promise que resolve com os produtos quando a carga inicial for concluída.
- * Mantido para compatibilidade com o ciclo de vida inicial das páginas.
- * @returns {Promise<Array>} Lista de produtos inicial
+ * Carrega todos os produtos do Supabase.
+ * @returns {Promise<Array>}
  */
 async function carregarProdutos() {
-    return initPromise;
+    try {
+        const resp = await fetch(API + '?order=id.asc', { headers: HEADERS });
+        if (!resp.ok) throw new Error('Erro ao buscar produtos');
+        _cache = await resp.json();
+        return _cache;
+    } catch (erro) {
+        console.error('Erro ao carregar produtos:', erro);
+        _cache = [];
+        return [];
+    }
 }
 
 /**
- * Retorna os produtos armazenados no cache local (síncrono).
- * @returns {Array} Lista de produtos do cache
+ * Retorna o cache local (síncrono).
+ * Sempre chame carregarProdutos() antes.
+ * @returns {Array}
  */
 function getProdutos() {
-    return produtosCache;
+    return _cache;
 }
 
 /**
- * Adiciona um novo produto no Firestore.
+ * Adiciona um novo produto no Supabase.
  * @param {Object} dados — { nome, preco, estoque, categoria, imagem }
+ * @returns {Promise<Array>} Lista atualizada
  */
 async function adicionarProduto(dados) {
-    const id = Date.now();
     const novoProduto = {
-        id: id,
         nome: dados.nome,
         preco: parseFloat(dados.preco),
         estoque: parseInt(dados.estoque),
@@ -139,75 +57,129 @@ async function adicionarProduto(dados) {
         imagem: dados.imagem || '',
         status: parseInt(dados.estoque) > 0 ? 'Disponível' : 'Esgotado'
     };
+
     try {
-        await db.collection("produtos").doc(id.toString()).set(novoProduto);
-    } catch (e) {
-        console.error("Erro ao adicionar produto no Firestore:", e);
-        throw e;
+        const resp = await fetch(API, {
+            method: 'POST',
+            headers: { ...HEADERS, 'Prefer': 'return=representation' },
+            body: JSON.stringify(novoProduto)
+        });
+        if (!resp.ok) throw new Error('Erro ao adicionar produto');
+        await carregarProdutos();
+        return _cache;
+    } catch (erro) {
+        console.error('Erro ao adicionar produto:', erro);
+        return _cache;
     }
 }
 
 /**
- * Edita um produto existente pelo ID no Firestore.
+ * Edita um produto existente pelo ID.
  * @param {number} id
  * @param {Object} dados — campos a atualizar
+ * @returns {Promise<Array>} Lista atualizada
  */
 async function editarProduto(id, dados) {
-    try {
-        const docRef = db.collection("produtos").doc(id.toString());
-        const updateData = {};
-        if (dados.nome !== undefined) updateData.nome = dados.nome;
-        if (dados.preco !== undefined) updateData.preco = parseFloat(dados.preco);
-        if (dados.estoque !== undefined) {
-            updateData.estoque = parseInt(dados.estoque);
-            updateData.status = parseInt(dados.estoque) > 0 ? 'Disponível' : 'Esgotado';
-        }
-        if (dados.categoria !== undefined) updateData.categoria = dados.categoria;
-        if (dados.imagem !== undefined) updateData.imagem = dados.imagem;
+    const atualizacao = {
+        nome: dados.nome,
+        preco: dados.preco !== undefined ? parseFloat(dados.preco) : undefined,
+        estoque: dados.estoque !== undefined ? parseInt(dados.estoque) : undefined,
+        categoria: dados.categoria,
+        imagem: dados.imagem !== undefined ? dados.imagem : undefined,
+    };
 
-        await docRef.update(updateData);
-    } catch (e) {
-        console.error("Erro ao editar produto no Firestore:", e);
-        throw e;
+    // Recalcula status com base no estoque
+    if (atualizacao.estoque !== undefined) {
+        atualizacao.status = atualizacao.estoque > 0 ? 'Disponível' : 'Esgotado';
+    }
+
+    // Remove campos undefined
+    Object.keys(atualizacao).forEach(k => atualizacao[k] === undefined && delete atualizacao[k]);
+
+    try {
+        const resp = await fetch(API + '?id=eq.' + id, {
+            method: 'PATCH',
+            headers: { ...HEADERS, 'Prefer': 'return=representation' },
+            body: JSON.stringify(atualizacao)
+        });
+        if (!resp.ok) throw new Error('Erro ao editar produto');
+        await carregarProdutos();
+        return _cache;
+    } catch (erro) {
+        console.error('Erro ao editar produto:', erro);
+        return _cache;
     }
 }
 
 /**
- * Deleta um produto pelo ID no Firestore.
+ * Deleta um produto pelo ID.
  * @param {number} id
+ * @returns {Promise<Array>} Lista atualizada
  */
 async function deletarProduto(id) {
     try {
-        await db.collection("produtos").doc(id.toString()).delete();
-    } catch (e) {
-        console.error("Erro ao deletar produto no Firestore:", e);
-        throw e;
+        const resp = await fetch(API + '?id=eq.' + id, {
+            method: 'DELETE',
+            headers: HEADERS
+        });
+        if (!resp.ok) throw new Error('Erro ao deletar produto');
+        await carregarProdutos();
+        return _cache;
+    } catch (erro) {
+        console.error('Erro ao deletar produto:', erro);
+        return _cache;
     }
 }
 
 /**
- * Alterna o status do produto entre Disponível e Esgotado no Firestore.
- * Se ficar Disponível com estoque 0, define estoque = 10.
+ * Alterna o status do produto entre Disponível e Esgotado.
  * @param {number} id
+ * @returns {Promise<Array>} Lista atualizada
  */
 async function alternarStatus(id) {
+    const produto = _cache.find(p => p.id === id);
+    if (!produto) return _cache;
+
+    const novoStatus = produto.status === 'Disponível' ? 'Esgotado' : 'Disponível';
+    const novoEstoque = novoStatus === 'Disponível' && produto.estoque === 0 ? 10 : produto.estoque;
+
     try {
-        const docRef = db.collection("produtos").doc(id.toString());
-        const doc = await docRef.get();
-        if (doc.exists) {
-            const currentData = doc.data();
-            const novoStatus = currentData.status === 'Disponível' ? 'Esgotado' : 'Disponível';
-            let novoEstoque = currentData.estoque;
-            if (novoStatus === 'Disponível' && currentData.estoque === 0) {
-                novoEstoque = 10;
-            }
-            await docRef.update({
-                status: novoStatus,
-                estoque: novoEstoque
-            });
-        }
-    } catch (e) {
-        console.error("Erro ao alternar status no Firestore:", e);
-        throw e;
+        const resp = await fetch(API + '?id=eq.' + id, {
+            method: 'PATCH',
+            headers: { ...HEADERS, 'Prefer': 'return=representation' },
+            body: JSON.stringify({ status: novoStatus, estoque: novoEstoque })
+        });
+        if (!resp.ok) throw new Error('Erro ao alternar status');
+        await carregarProdutos();
+        return _cache;
+    } catch (erro) {
+        console.error('Erro ao alternar status:', erro);
+        return _cache;
     }
+}
+
+/**
+ * Salva lista inteira (compatibilidade). Não usado no Supabase.
+ */
+function salvarProdutos(lista) {
+    console.warn('salvarProdutos() não é usado com Supabase. Use adicionarProduto/editarProduto/deletarProduto.');
+}
+
+/**
+ * Registra um callback que é chamado sempre que os dados mudam.
+ * No Supabase, faz polling a cada 5 segundos para manter sincronizado.
+ * @param {Function} callback
+ */
+function registrarListenerProdutos(callback) {
+    // Chama imediatamente para renderizar
+    carregarProdutos().then(function() {
+        callback();
+    });
+
+    // Polling a cada 5 segundos para sincronizar com outros usuários
+    setInterval(function() {
+        carregarProdutos().then(function() {
+            callback();
+        });
+    }, 5000);
 }
